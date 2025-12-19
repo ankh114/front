@@ -1,0 +1,25 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 自定义工具类（原HTML中的@layer utilities） */
+@layer utilities {
+  .content-auto {
+    content-visibility: auto;
+  }
+  .sidebar-item {
+    @apply flex items-center gap-3 px-4 py-3 text-gray-600 hover:bg-primary/10 hover:text-primary rounded-lg transition-all duration-200 cursor-pointer;
+  }
+  .sidebar-item.active {
+    @apply bg-primary/10 text-primary font-medium;
+  }
+  .card-shadow {
+    @apply shadow-md hover:shadow-lg transition-shadow duration-300;
+  }
+  .btn-primary {
+    @apply bg-primary text-white px-4 py-2 rounded-lg hover:bg-primary/90 transition-all duration-200;
+  }
+  .btn-outline {
+    @apply border border-gray-300 px-4 py-2 rounded-lg hover:border-primary hover:text-primary transition-all duration-200;
+  }
+}
