@@ -1,0 +1,1240 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SLAM地图查看器</title>
+    <link rel="icon" href="data:;base64,iVBORw0KGgo=">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: sans-serif; background: #f5f5f5; color: #333; min-height: 100vh; display: flex; flex-direction: column; }
+        header { background: #ffffff; padding: 0.5rem 1rem; display: flex; justify-content: center; align-items: center; border-bottom: 1px solid #e0e0e0; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .controls { display: flex; gap: 0.5rem; align-items: center; }
+        select, button { padding: 0.25rem 0.75rem; border: 1px solid #ddd; border-radius: 4px; cursor: pointer; font-size: 0.8rem; }
+        select { background: #ffffff; color: #333; }
+        button { background: #4a90e2; color: #fff; border: none; }
+        button:hover { background: #357abd; }
+        .main { flex: 1; display: flex; overflow: hidden; }
+        .sidebar { width: 200px; background: #ffffff; padding: 5rem 1rem 1rem; border-right: 1px solid #e0e0e0; }
+        .sidebar h3 { color: #333; margin-bottom: 1rem; font-size: 1rem; }
+        .map-info { background: #f8f9fa; padding: 0.75rem; border-radius: 4px; margin-bottom: 1rem; }
+        .map-info p { margin: 0.25rem 0; font-size: 0.75rem; }
+        .map-info span { color: #4a90e2; font-weight: bold; }
+        .canvas-container { flex: 1; position: relative; overflow: auto; background: #f0f0f0; padding: 0; margin: 0; }
+        #mapCanvas { position: absolute; top: 0; left: 0; cursor: grab; display: block; }
+        #mapCanvas:active { cursor: grabbing; }
+        .loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #666; font-size: 0.9rem; }
+        .legend-item { display: flex; align-items: center; gap: 0.5rem; margin: 0.5rem 0; font-size: 0.75rem; }
+        .legend-color { width: 16px; height: 16px; border-radius: 3px; }
+        .file-input { display: none; }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="controls">
+            <select id="mapSelect">
+                <option value="">加载中...</option>
+            </select>
+            <button onclick="document.getElementById('fileInput').click()">加载本地PGM</button>
+            <input type="file" id="fileInput" class="file-input" accept=".pgm">
+            <button id="zoomIn">+</button>
+            <button id="zoomOut">-</button>
+            <button id="resetView">重置</button>
+        </div>
+    </header>
+    <div class="main">
+        <aside class="sidebar">
+            <h3>地图信息</h3>
+            <div class="map-info">
+                <p>文件名: <span id="infoName">-</span></p>
+                <p>分辨率: <span id="infoResolution">-</span></p>
+                <p>尺寸: <span id="infoSize">-</span></p>
+            </div>
+            <h3>图例</h3>
+            <div class="legend-item"><div class="legend-color" style="background:#1a1a1a"></div>障碍物</div>
+            <div class="legend-item"><div class="legend-color" style="background:#e94560"></div>未知区域</div>
+            <div class="legend-item"><div class="legend-color" style="background:#f5f5dc"></div>自由空间</div>
+        </aside>
+        <div class="canvas-container" id="canvasContainer">
+            <canvas id="mapCanvas"></canvas>
+            <div class="loading" id="loading">请选择或加载地图文件</div>
+        </div>
+    </div>
+
+    <script>
+    (function() {
+        const canvas = document.getElementById('mapCanvas');
+        const ctx = canvas.getContext('2d');
+        const container = document.getElementById('canvasContainer');
+        const loading = document.getElementById('loading');
+        
+        let scale = 1, offsetX = 0, offsetY = 0;
+        let isDragging = false, startX = 0, startY = 0;
+        let mapWidth = 0, mapHeight = 0;
+        let pathPoints = []; // 路径点数组
+        let carPosition = null; // 小车位置
+        let originalMapData = null; // 原始地图图像数据
+        // 新增：存储YAML解析后的参数（默认值兼容原有硬编码）
+        let yamlConfig = {
+            resolution: 0.05,
+            origin: [-24.25, -31.25, 0.0],
+            occupied_thresh: 0.65,
+            free_thresh: 0.196
+        };
+        // 新增：存储地图信息
+        let mapInfo = {
+            resolution: 0.05,
+            origin_x: -24.25,
+            origin_y: -31.25,
+            origin_yaw: 0.0,
+            width: 0,
+            height: 0,
+            preview_width: 0,
+            preview_height: 0,
+            preview_offset_x: 0,
+            preview_offset_y: 0
+        };
+        
+        // 核心坐标换算函数：预览图像素坐标转世界坐标
+        function previewPixelToWorld(mapInfo, previewPixelX, previewPixelY) {
+            // 1. 预览图像素坐标就是原始地图像素坐标（因为preview_offset_x和preview_offset_y都为0）
+            const originalPixelX = previewPixelX;
+            const originalPixelY = previewPixelY;
+            
+            // 2. 原始地图像素坐标转本地坐标
+            const resolution = mapInfo.resolution || 0.05;
+            const localX = originalPixelX * resolution;
+            
+            // 使用有效的高度值，优先使用preview_height（因为我们显示的是预览图）
+            const height = mapInfo.preview_height || mapInfo.height || 1000; // 默认值避免为0
+            const localY = (height - originalPixelY) * resolution;
+            
+            // 3. 本地坐标转世界坐标（考虑origin_yaw）
+            const originYaw = mapInfo.origin_yaw || 0;
+            const cosYaw = Math.cos(originYaw);
+            const sinYaw = Math.sin(originYaw);
+            
+            const worldX = (mapInfo.origin_x || 0) + localX * cosYaw - localY * sinYaw;
+            const worldY = (mapInfo.origin_y || 0) + localX * sinYaw + localY * cosYaw;
+            
+            return {
+                worldX: worldX,
+                worldY: worldY,
+                originalPixelX: originalPixelX,
+                originalPixelY: originalPixelY
+            };
+        }
+        
+        // 核心坐标换算函数：世界坐标转预览图像素坐标
+        function worldToPreviewPixel(mapInfo, worldX, worldY) {
+            // 1. 世界坐标转本地坐标（考虑origin_yaw）
+            const originYaw = mapInfo.origin_yaw || 0;
+            const cosYaw = Math.cos(originYaw);
+            const sinYaw = Math.sin(originYaw);
+            
+            const localX = (worldX - (mapInfo.origin_x || 0)) * cosYaw + (worldY - (mapInfo.origin_y || 0)) * sinYaw;
+            const localY = -(worldX - (mapInfo.origin_x || 0)) * sinYaw + (worldY - (mapInfo.origin_y || 0)) * cosYaw;
+            
+            // 2. 本地坐标转原始地图像素坐标
+            const originalPixelX = localX / (mapInfo.resolution || 0.05);
+            const originalPixelY = (mapInfo.height || mapInfo.preview_height || 0) - (localY / (mapInfo.resolution || 0.05));
+            
+            // 3. 原始地图像素坐标就是预览图像素坐标（因为preview_offset_x和preview_offset_y都为0）
+            const previewPixelX = originalPixelX;
+            const previewPixelY = originalPixelY;
+            
+            return {
+                previewPixelX: previewPixelX,
+                previewPixelY: previewPixelY,
+                originalPixelX: originalPixelX,
+                originalPixelY: originalPixelY
+            };
+        }
+        
+        // 处理URL参数
+        async function handleUrlParams() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const mapFile = urlParams.get('map');
+            const previewUrl = urlParams.get('preview');
+            const hideMapSelect = urlParams.get('hideMapSelect') === 'true';
+            
+            // 如果需要隐藏地图选择器
+            if (hideMapSelect) {
+                const mapSelect = document.getElementById('mapSelect');
+                const loadLocalButton = document.querySelector('button[onclick="document.getElementById(\'fileInput\').click()"]');
+                const fileInput = document.getElementById('fileInput');
+                
+                if (mapSelect) mapSelect.style.display = 'none';
+                if (loadLocalButton) loadLocalButton.style.display = 'none';
+                if (fileInput) fileInput.style.display = 'none';
+            }
+            
+            if (previewUrl) {
+                // 加载预览图像作为地图
+                loading.textContent = '加载中...';
+                loadPreviewMap(previewUrl);
+            } else if (mapFile) {
+                // 直接加载指定的地图
+                loading.textContent = '加载中...';
+                try {
+                    // 检查mapFile是否是数字ID
+                    if (!isNaN(mapFile) && String(mapFile).length < 10) {
+                        // 如果是ID，先通过API获取地图详情
+                        const mapResponse = await fetch(`/api/maps/${mapFile}`);
+                        if (mapResponse.ok) {
+                            const mapData = await mapResponse.json();
+                            console.log('Map data from API:', mapData);
+                            
+                            // 更新mapInfo对象
+                            mapInfo = {
+                                resolution: mapData.resolution || 0.05,
+                                origin_x: mapData.origin_x || 0,
+                                origin_y: mapData.origin_y || 0,
+                                origin_yaw: mapData.origin_yaw || 0,
+                                width: mapData.width || 0,
+                                height: mapData.height || 0,
+                                preview_width: mapData.preview_width || mapData.width || 0,
+                                preview_height: mapData.preview_height || mapData.height || 0,
+                                preview_offset_x: mapData.preview_offset_x || 0,
+                                preview_offset_y: mapData.preview_offset_y || 0
+                            };
+                            
+                            // 如果有预览图URL，使用预览图
+                            if (mapData.preview_url) {
+                                loadPreviewMap(mapData.preview_url);
+                            } else {
+                                // 否则加载PGM文件
+                                const pgmPath = mapData.pgm_url || mapData.pgm_file;
+                                if (pgmPath) {
+                                    // 加载对应的YAML文件
+                                    if (pgmPath.endsWith('.pgm')) {
+                                        const yamlPath = pgmPath.replace('.pgm', '.yaml');
+                                        console.log('Loading YAML:', yamlPath);
+                                        await loadYAML(yamlPath);
+                                    }
+                                    // 加载PGM文件
+                                    const response = await fetch(pgmPath);
+                                    const buf = await response.arrayBuffer();
+                                    await load(buf, pgmPath);
+                                } else {
+                                    throw new Error('地图文件路径不存在');
+                                }
+                            }
+                        } else {
+                            throw new Error('获取地图详情失败');
+                        }
+                    } else {
+                        // 如果是文件路径，直接加载
+                        // 先加载对应的YAML文件
+                        if (mapFile.endsWith('.pgm')) {
+                            const yamlPath = mapFile.replace('.pgm', '.yaml');
+                            console.log('Loading YAML:', yamlPath);
+                            await loadYAML(yamlPath);
+                        }
+                        // 再加载PGM文件
+                        const response = await fetch(mapFile);
+                        const buf = await response.arrayBuffer();
+                        await load(buf, mapFile);
+                    }
+                } catch (e) {
+                    loading.textContent = '加载失败: ' + e.message + ' (请用HTTP服务器)';
+                    console.error('Error loading map from URL:', e);
+                }
+            }
+            
+            // 如果有map参数，设置地图选择器的值
+            if (mapFile) {
+                const mapSelect = document.getElementById('mapSelect');
+                if (mapSelect) {
+                    // 查找与mapFile匹配的选项
+                    let found = false;
+                    for (let i = 0; i < mapSelect.options.length; i++) {
+                        const option = mapSelect.options[i];
+                        // 检查选项值是否包含mapFile或选项文本是否匹配
+                        if (option.value.includes(mapFile) || option.textContent.includes(mapFile)) {
+                            // 设置地图选择器的值
+                            mapSelect.value = option.value;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        console.log('Map not found in dropdown:', mapFile);
+                    }
+                }
+            }
+        }
+        
+        // 动态加载用户地图
+        async function loadUserMaps() {
+            try {
+                const response = await fetch('/api/maps/');
+                if (!response.ok) throw new Error('加载地图失败');
+                const maps = await response.json();
+                const mapSelect = document.getElementById('mapSelect');
+                
+                // 清空并重新生成选项
+                mapSelect.innerHTML = '<option value="">选择地图...</option>';
+                
+                if (maps && Array.isArray(maps)) {
+                    // 只加载带有preview_url的地图
+                    const mapsWithPreview = maps.filter(map => map.preview_url);
+                    
+                    if (mapsWithPreview.length > 0) {
+                        mapsWithPreview.forEach(map => {
+                            const option = document.createElement('option');
+                            // 使用地图ID作为值，这样可以通过API获取完整的地图信息
+                            option.value = map.id;
+                            option.textContent = map.name || '未命名地图';
+                            mapSelect.appendChild(option);
+                        });
+                    } else {
+                        mapSelect.innerHTML = '<option value="">暂无预览图地图</option>';
+                    }
+                } else {
+                    mapSelect.innerHTML = '<option value="">暂无地图</option>';
+                }
+            } catch (error) {
+                console.error('加载用户地图失败:', error);
+                const mapSelect = document.getElementById('mapSelect');
+                mapSelect.innerHTML = '<option value="">加载地图失败</option>';
+            }
+        }
+
+        // 页面加载完成后处理URL参数
+        window.addEventListener('load', async function() {
+            await loadUserMaps();
+            await handleUrlParams();
+        });
+
+        // 新增：解析YAML文件核心函数
+        function parseYAML(yamlText) {
+            const config = {
+                resolution: 0.05,
+                origin: [-24.25, -31.25, 0.0],
+                occupied_thresh: 0.65,
+                free_thresh: 0.196
+            };
+            // 按行解析YAML（适配ROS标准地图YAML格式）
+            yamlText.split('\n').forEach(line => {
+                line = line.trim();
+                if (!line || line.startsWith('#')) return; // 跳过注释和空行
+                
+                const colonIndex = line.indexOf(':');
+                if (colonIndex === -1) return;
+                
+                const key = line.substring(0, colonIndex).trim();
+                const value = line.substring(colonIndex + 1).trim();
+                
+                switch(key) {
+                    case 'resolution':
+                        config.resolution = parseFloat(value);
+                        break;
+                    case 'origin':
+                        // 解析origin: [-24.25, -31.25, 0.0] 格式
+                        const originArr = value.replace(/\[|\]/g, '').split(',').map(v => parseFloat(v.trim()));
+                        if (originArr.length >= 2) {
+                            config.origin = originArr;
+                        }
+                        break;
+                    case 'occupied_thresh':
+                        config.occupied_thresh = parseFloat(value);
+                        break;
+                    case 'free_thresh':
+                        config.free_thresh = parseFloat(value);
+                        break;
+                }
+            });
+            return config;
+        }
+
+        // 新增：加载YAML文件（适配在线选择/本地加载）
+        async function loadYAML(yamlPath) {
+            try {
+                const response = await fetch(yamlPath);
+                if (!response.ok) throw new Error('YAML文件加载失败');
+                const yamlText = await response.text();
+                yamlConfig = parseYAML(yamlText);
+                // 更新侧边栏原点信息
+                console.log('YAML loaded:', yamlConfig);
+                return yamlConfig;
+            } catch (e) {
+                console.warn('YAML加载失败，使用默认参数:', e);
+                // 仍使用默认参数，保证功能不中断
+                return yamlConfig;
+            }
+        }
+
+        function parsePGM(data) {
+            let pos = 0, line = '';
+            
+            function skipComments() {
+                while (pos < data.length) {
+                    if (data[pos] === 35) {
+                        while (pos < data.length && data[pos] !== 10) pos++;
+                        pos++;
+                    } else if (data[pos] <= 32) {
+                        pos++;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            
+            function readNum() {
+                skipComments();
+                let n = 0;
+                while (pos < data.length && data[pos] > 32) {
+                    n = n * 10 + (data[pos] - 48);
+                    pos++;
+                }
+                return n;
+            }
+            
+            const magic = String.fromCharCode(data[pos++]);
+            if (magic !== 'P') return null;
+            const fmt = String.fromCharCode(data[pos++]);
+            if (fmt !== '2' && fmt !== '5') { alert('仅支持P2/P5格式'); return null; }
+            
+            const w = readNum(), h = readNum(), maxVal = readNum();
+            console.log('PGM:', w, h, maxVal, fmt);
+            if (w <= 0 || h <= 0) return null;
+            
+            const pixels = new Uint8Array(w * h);
+            if (fmt === '2') {
+                for (let i = 0; i < w * h; i++) pixels[i] = readNum();
+            } else {
+                for (let i = 0; i < w * h; i++) pixels[i] = data[pos++];
+            }
+            return { width: w, height: h, maxVal: maxVal, data: pixels };
+        }
+
+        function draw(pixels, w, h, maxVal) {
+            const imgData = ctx.createImageData(w, h);
+            const occ = yamlConfig.occupied_thresh;
+            const free = yamlConfig.free_thresh;
+            for (let i = 0; i < pixels.length; i++) {
+                const v = pixels[i] / maxVal;
+                const idx = i * 4;
+                if (v > occ) { imgData.data[idx] = 26; imgData.data[idx+1] = 26; imgData.data[idx+2] = 26; }
+                else if (v < free) { imgData.data[idx] = 245; imgData.data[idx+1] = 245; imgData.data[idx+2] = 220; }
+                else { imgData.data[idx] = 233; imgData.data[idx+1] = 69; imgData.data[idx+2] = 96; }
+                imgData.data[idx+3] = 255;
+            }
+            ctx.putImageData(imgData, 0, 0);
+            // 保存原始地图图像数据
+            originalMapData = ctx.getImageData(0, 0, w, h);
+        }
+
+        // 绘制路径
+        function drawPath() {
+            // 过滤掉无效的路径点
+            const validPathPoints = pathPoints.filter(point => point && point.x !== undefined && point.y !== undefined);
+            console.log('Drawing path with', validPathPoints.length, 'valid points');
+            
+            // 绘制路径
+            if (validPathPoints.length >= 2) {
+                console.log('Drawing path lines');
+                ctx.beginPath();
+                ctx.moveTo(validPathPoints[0].x, validPathPoints[0].y);
+                for (let i = 1; i < validPathPoints.length; i++) {
+                    console.log('Line from', validPathPoints[i-1], 'to', validPathPoints[i]);
+                    ctx.lineTo(validPathPoints[i].x, validPathPoints[i].y);
+                }
+                ctx.strokeStyle = '#007bff';
+                ctx.lineWidth = 5; // 路径更粗
+                ctx.stroke();
+            }
+            
+            // 绘制路径点标记（即使只有一个点）
+            console.log('Drawing path markers');
+            validPathPoints.forEach((point, index) => {
+                console.log('Drawing marker for point', index, 'at', point);
+                ctx.beginPath();
+                ctx.arc(point.x, point.y, 8, 0, 2 * Math.PI); // 点更大
+                if (index === 0) {
+                    // 起点
+                    ctx.fillStyle = '#28a745';
+                } else if (index === validPathPoints.length - 1) {
+                    // 终点
+                    ctx.fillStyle = '#dc3545';
+                } else {
+                    // 中间点
+                    ctx.fillStyle = '#ffc107';
+                }
+                ctx.fill();
+                ctx.strokeStyle = '#ffffff';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+                
+                // 显示路径点顺序数字
+                ctx.fillStyle = '#ffffff';
+                ctx.font = '16px Arial'; // 数字更大
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(index + 1, point.x, point.y);
+                
+                // 显示起点和终点文字标签
+                if (index === 0) {
+                    // 起点标签
+                    ctx.fillStyle = '#28a745';
+                    ctx.font = '14px Arial';
+                    ctx.textAlign = 'left';
+                    ctx.fillText('起点', point.x + 15, point.y - 10);
+                } else if (index === validPathPoints.length - 1) {
+                    // 终点标签
+                    ctx.fillStyle = '#dc3545';
+                    ctx.font = '14px Arial';
+                    ctx.textAlign = 'left';
+                    ctx.fillText('终点', point.x + 15, point.y - 10);
+                }
+            });
+            console.log('Path drawing completed');
+        }
+
+        // 小车图标
+        let carIcon = new Image();
+        carIcon.src = 'https://trae-api-cn.mchost.guru/api/ide/v1/text_to_image?prompt=small%20car%20icon%20top%20view%20simple%20design&image_size=square';
+        
+        // 绘制小车
+        function drawCar() {
+            if (!carPosition) return;
+            
+            const x = carPosition.x;
+            const y = carPosition.y;
+            const angle = carPosition.angle || 0;
+            
+            // 保存当前状态
+            ctx.save();
+            
+            // 移动到小车位置并旋转
+            ctx.translate(x, y);
+            ctx.rotate(angle);
+            
+            // 绘制小车图标
+            if (carIcon.complete) {
+                // 绘制图标，调整大小和位置
+                const iconWidth = 20;
+                const iconHeight = 15;
+                ctx.drawImage(carIcon, -iconWidth/2, -iconHeight/2, iconWidth, iconHeight);
+            } else {
+                // 如果图标未加载完成，绘制一个简单的汽车形状作为后备
+                // 绘制小车车身（类似汽车的形状）
+                ctx.beginPath();
+                ctx.moveTo(10, 0);
+                ctx.lineTo(5, -5);
+                ctx.lineTo(-10, -5);
+                ctx.lineTo(-10, 5);
+                ctx.lineTo(5, 5);
+                ctx.closePath();
+                ctx.fillStyle = '#ff6b6b';
+                ctx.fill();
+                ctx.strokeStyle = '#ffffff';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+                
+                // 绘制车轮
+                ctx.beginPath();
+                ctx.arc(5, 6, 2, 0, 2 * Math.PI);
+                ctx.fillStyle = '#333333';
+                ctx.fill();
+                ctx.strokeStyle = '#ffffff';
+                ctx.lineWidth = 1;
+                ctx.stroke();
+                
+                ctx.beginPath();
+                ctx.arc(-5, 6, 2, 0, 2 * Math.PI);
+                ctx.fillStyle = '#333333';
+                ctx.fill();
+                ctx.strokeStyle = '#ffffff';
+                ctx.lineWidth = 1;
+                ctx.stroke();
+                
+                ctx.beginPath();
+                ctx.arc(5, -6, 2, 0, 2 * Math.PI);
+                ctx.fillStyle = '#333333';
+                ctx.fill();
+                ctx.strokeStyle = '#ffffff';
+                ctx.lineWidth = 1;
+                ctx.stroke();
+                
+                ctx.beginPath();
+                ctx.arc(-5, -6, 2, 0, 2 * Math.PI);
+                ctx.fillStyle = '#333333';
+                ctx.fill();
+                ctx.strokeStyle = '#ffffff';
+                ctx.lineWidth = 1;
+                ctx.stroke();
+            }
+            
+            // 恢复状态
+            ctx.restore();
+        }
+
+        function updateTransform() {
+            canvas.style.transform = 'translate(' + offsetX + 'px,' + offsetY + 'px) scale(' + scale + ')';
+        }
+
+        async function load(data, filename) {
+            // 立即显示加载中状态
+            loading.textContent = '处理中...';
+            loading.style.display = 'block';
+            try {
+                console.log('Loading file:', filename);
+                console.log('Data type:', typeof data);
+                console.log('Data instanceof ArrayBuffer:', data instanceof ArrayBuffer);
+                
+                if (!(data instanceof ArrayBuffer)) {
+                    throw new Error('Expected ArrayBuffer data');
+                }
+                
+                // 尝试加载对应的YAML文件
+                if (typeof filename === 'string' && filename.endsWith('.pgm')) {
+                    const yamlPath = filename.replace('.pgm', '.yaml');
+                    console.log('Loading YAML:', yamlPath);
+                    await loadYAML(yamlPath);
+                }
+                
+                const uint8Data = new Uint8Array(data);
+                console.log('Uint8Array length:', uint8Data.length);
+                
+                const result = parsePGM(uint8Data);
+                if (!result) { 
+                    loading.textContent = '解析失败'; 
+                    console.error('Parse PGM failed');
+                    // 3秒后隐藏错误提示
+                    setTimeout(() => {
+                        loading.style.display = 'none';
+                    }, 3000);
+                    return; 
+                }
+                
+                mapWidth = result.width;
+                mapHeight = result.height;
+                canvas.width = mapWidth;
+                canvas.height = mapHeight;
+                
+                console.log('Map dimensions:', mapWidth, 'x', mapHeight);
+                
+                draw(result.data, mapWidth, mapHeight, result.maxVal);
+                drawPath();
+                drawCar();
+                
+                // 隐藏加载提示
+                loading.style.display = 'none';
+                
+                // 平铺地图，不进行自动缩放和居中
+                scale = 1; 
+                offsetX = 0; 
+                offsetY = 0;
+                updateTransform();
+                
+                // 强制容器滚动到左上角
+                container.scrollLeft = 0;
+                container.scrollTop = 0;
+                
+                document.getElementById('infoName').textContent = filename;
+                document.getElementById('infoResolution').textContent = yamlConfig.resolution + ' m/pixel';
+                document.getElementById('infoSize').textContent = mapWidth + ' x ' + mapHeight;
+                
+                console.log('Map loaded successfully');
+            } catch (e) {
+                console.error('Error loading map:', e);
+                loading.textContent = '错误: ' + e.message;
+                // 3秒后隐藏错误提示
+                setTimeout(() => {
+                    loading.style.display = 'none';
+                }, 3000);
+            }
+        }
+
+        // 加载预览图像作为地图
+        function loadPreviewMap(previewUrl) {
+            try {
+                console.log('Loading preview map:', previewUrl);
+                
+                // 立即显示加载中状态
+                loading.textContent = '加载中...';
+                loading.style.display = 'block';
+                
+                // 创建图像对象并设置跨域属性
+                const img = new Image();
+                img.crossOrigin = 'anonymous'; // 允许加载跨域图像
+                
+                // 预加载图像，提高加载速度
+                img.src = previewUrl;
+                
+                img.onload = function() {
+                    console.log('Preview image loaded, processing...');
+                    
+                    // 设置地图尺寸
+                    mapWidth = img.width;
+                    mapHeight = img.height;
+                    canvas.width = mapWidth;
+                    canvas.height = mapHeight;
+                    
+                    console.log('Preview map dimensions:', mapWidth, 'x', mapHeight);
+                    
+                    // 绘制预览图像
+                    ctx.drawImage(img, 0, 0);
+                    
+                    // 保存原始地图图像数据
+                    originalMapData = ctx.getImageData(0, 0, mapWidth, mapHeight);
+                    
+                    // 绘制路径和小车
+                    drawPath();
+                    drawCar();
+                    
+                    // 隐藏加载提示
+                    loading.style.display = 'none';
+                    
+                    // 平铺地图，不进行自动缩放和居中
+                    scale = 1; 
+                    offsetX = 0; 
+                    offsetY = 0;
+                    updateTransform();
+                    
+                    // 强制容器滚动到左上角
+                    container.scrollLeft = 0;
+                    container.scrollTop = 0;
+                    
+                    // 更新地图信息
+                    document.getElementById('infoName').textContent = previewUrl;
+                    document.getElementById('infoResolution').textContent = (mapInfo.resolution || 0.05) + ' m/pixel';
+                    document.getElementById('infoSize').textContent = mapWidth + ' x ' + mapHeight;
+                    
+                    console.log('Preview map loaded successfully');
+                };
+                
+                img.onerror = function() {
+                    console.error('Failed to load preview image:', previewUrl);
+                    loading.textContent = '加载预览图像失败';
+                    // 3秒后隐藏错误提示
+                    setTimeout(() => {
+                        loading.style.display = 'none';
+                    }, 3000);
+                };
+                
+                img.onabort = function() {
+                    console.error('Image load aborted:', previewUrl);
+                    loading.textContent = '加载被中止';
+                    // 3秒后隐藏错误提示
+                    setTimeout(() => {
+                        loading.style.display = 'none';
+                    }, 3000);
+                };
+            } catch (e) {
+                console.error('Error loading preview map:', e);
+                loading.textContent = '错误: ' + e.message;
+                // 3秒后隐藏错误提示
+                setTimeout(() => {
+                    loading.style.display = 'none';
+                }, 3000);
+            }
+        }
+
+        document.getElementById('mapSelect').addEventListener('change', async function(e) {
+            if (!e.target.value) return;
+            loading.textContent = '加载中...';
+            try {
+                // 检查是否是地图ID
+                if (!isNaN(e.target.value) && String(e.target.value).length < 10) {
+                    // 如果是ID，通过API获取地图详情
+                    const mapResponse = await fetch(`/api/maps/${e.target.value}`);
+                    if (mapResponse.ok) {
+                        const mapData = await mapResponse.json();
+                        console.log('Map data from API:', mapData);
+                        
+                        // 更新mapInfo对象
+                        mapInfo = {
+                            resolution: mapData.resolution || 0.05,
+                            origin_x: mapData.origin_x || 0,
+                            origin_y: mapData.origin_y || 0,
+                            origin_yaw: mapData.origin_yaw || 0,
+                            width: mapData.width || 0,
+                            height: mapData.height || 0,
+                            preview_width: mapData.preview_width || mapData.width || 0,
+                            preview_height: mapData.preview_height || mapData.height || 0,
+                            preview_offset_x: mapData.preview_offset_x || 0,
+                            preview_offset_y: mapData.preview_offset_y || 0
+                        };
+                        
+                        // 加载预览图
+                        if (mapData.preview_url) {
+                            loadPreviewMap(mapData.preview_url);
+                        } else {
+                            throw new Error('地图没有预览图');
+                        }
+                    } else {
+                        throw new Error('获取地图详情失败');
+                    }
+                } else if (e.target.value.endsWith('.pgm')) {
+                    // 如果是PGM文件路径，保持原有逻辑
+                    // 先加载对应的YAML文件
+                    const yamlPath = e.target.value.replace('.pgm', '.yaml');
+                    console.log('Loading YAML:', yamlPath);
+                    await loadYAML(yamlPath);
+                    // 再加载PGM文件
+                    const response = await fetch(e.target.value);
+                    const buf = await response.arrayBuffer();
+                    await load(buf, e.target.value);
+                }
+            } catch (e) {
+                loading.textContent = '加载失败: ' + e.message + ' (请用HTTP服务器)';
+                console.error('Error loading map:', e);
+            }
+        });
+
+        document.getElementById('fileInput').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            loading.textContent = '加载中...';
+            const reader = new FileReader();
+            reader.onload = function(ev) { load(ev.target.result, file.name); };
+            reader.onerror = function() { loading.textContent = '读取文件失败'; };
+            reader.readAsArrayBuffer(file);
+        });
+
+        document.getElementById('zoomIn').onclick = function() { scale *= 1.2; updateTransform(); };
+        document.getElementById('zoomOut').onclick = function() { scale /= 1.2; updateTransform(); };
+        document.getElementById('resetView').onclick = function() { scale = 1; offsetX = 0; offsetY = 0; updateTransform(); };
+
+        let hasDragged = false;
+        let isClickHandled = false;
+        
+        canvas.addEventListener('mousedown', function(e) { 
+            isDragging = true; 
+            hasDragged = false;
+            isClickHandled = false;
+            startX = e.clientX - offsetX; 
+            startY = e.clientY - offsetY; 
+        });
+        canvas.addEventListener('mousemove', function(e) { 
+            if (isDragging) { 
+                hasDragged = true;
+                offsetX = e.clientX - startX; 
+                offsetY = e.clientY - startY; 
+                updateTransform(); 
+            } 
+        });
+        canvas.addEventListener('mouseup', function() { 
+            isDragging = false; 
+        });
+        canvas.addEventListener('mouseleave', function() { 
+            isDragging = false; 
+        });
+        canvas.addEventListener('wheel', function(e) { 
+            e.preventDefault(); 
+            scale *= e.deltaY > 0 ? 0.9 : 1.1; 
+            updateTransform(); 
+        });
+        
+        // 点击位置标记
+        let clickMarker = null;
+        
+        // 绘制模式：'normal'（普通模式）, 'point'（点选模式）, 'quad'（四边形模式）
+        let drawMode = 'normal';
+        
+        // 创建点击位置标记
+        const createClickMarker = () => {
+            if (!clickMarker) {
+                clickMarker = document.createElement('div');
+                clickMarker.id = 'clickMarker';
+                clickMarker.style.position = 'absolute';
+                clickMarker.style.width = '10px';
+                clickMarker.style.height = '10px';
+                clickMarker.style.borderRadius = '50%';
+                clickMarker.style.backgroundColor = '#007bff';
+                clickMarker.style.border = '2px solid white';
+                clickMarker.style.boxShadow = '0 0 5px rgba(0,0,0,0.3)';
+                clickMarker.style.zIndex = '999';
+                clickMarker.style.display = 'none';
+                document.body.appendChild(clickMarker);
+            }
+            return clickMarker;
+        };
+        
+        // 创建坐标对话框元素
+        const createCoordinateDialog = () => {
+            let dialog = document.getElementById('coordinateDialog');
+            if (!dialog) {
+                dialog = document.createElement('div');
+                dialog.id = 'coordinateDialog';
+                dialog.className = 'coordinate-dialog';
+                dialog.style.position = 'absolute';
+                dialog.style.backgroundColor = 'white';
+                dialog.style.border = '1px solid #ccc';
+                dialog.style.borderRadius = '6px';
+                dialog.style.padding = '8px';
+                dialog.style.boxShadow = '0 2px 8px rgba(0,0,0,0.2)';
+                dialog.style.zIndex = '1000';
+                dialog.style.display = 'none';
+                dialog.style.fontSize = '12px';
+                dialog.style.minWidth = '150px';
+                
+                // 添加三角形指示器
+                const triangle = document.createElement('div');
+                triangle.className = 'dialog-triangle';
+                triangle.style.position = 'absolute';
+                triangle.style.bottom = '-6px';
+                triangle.style.left = '50%';
+                triangle.style.transform = 'translateX(-50%)';
+                triangle.style.width = '0';
+                triangle.style.height = '0';
+                triangle.style.borderLeft = '6px solid transparent';
+                triangle.style.borderRight = '6px solid transparent';
+                triangle.style.borderTop = '6px solid white';
+                dialog.appendChild(triangle);
+                
+                document.body.appendChild(dialog);
+            }
+            return dialog;
+        };
+        
+        // 显示坐标对话框
+        const showCoordinateDialog = (x, y, pixelX, pixelY, worldX, worldY) => {
+            // 先关闭之前的对话框
+            closeCoordinateDialog();
+            
+            const dialog = createCoordinateDialog();
+            const marker = createClickMarker();
+            
+            // 设置对话框内容
+            dialog.innerHTML = `
+                <div style="font-weight: bold; margin-bottom: 4px;">坐标信息</div>
+                <div>像素坐标: (${pixelX.toFixed(0)}, ${pixelY.toFixed(0)})</div>
+                <div>世界坐标: (${worldX}m, ${worldY}m)</div>
+            `;
+            
+            // 添加三角形指示器
+            const triangle = document.createElement('div');
+            triangle.className = 'dialog-triangle';
+            triangle.style.position = 'absolute';
+            triangle.style.bottom = '-6px';
+            triangle.style.left = '50%';
+            triangle.style.transform = 'translateX(-50%)';
+            triangle.style.width = '0';
+            triangle.style.height = '0';
+            triangle.style.borderLeft = '6px solid transparent';
+            triangle.style.borderRight = '6px solid transparent';
+            triangle.style.borderTop = '6px solid white';
+            
+            // 移除旧的三角形（如果有）
+            const oldTriangle = dialog.querySelector('.dialog-triangle');
+            if (oldTriangle) {
+                oldTriangle.remove();
+            }
+            dialog.appendChild(triangle);
+            
+            // 显示点击位置标记
+            marker.style.left = `${x - 5}px`;
+            marker.style.top = `${y - 5}px`;
+            marker.style.display = 'block';
+            
+            // 设置对话框位置（在点击位置正上方）
+            dialog.style.left = `${x - 75}px`; // 居中显示
+            dialog.style.top = `${y - 80}px`; // 上方显示
+            dialog.style.display = 'block';
+            
+            // 点击其他地方关闭对话框
+            setTimeout(() => {
+                // 移除之前的事件监听器
+                document.removeEventListener('click', closeCoordinateDialog);
+                // 添加新的事件监听器
+                document.addEventListener('click', closeCoordinateDialog);
+            }, 100);
+        };
+        
+        // 关闭坐标对话框
+        const closeCoordinateDialog = (e) => {
+            // 如果点击的是画布，不关闭对话框
+            if (e && e.target === canvas) {
+                return;
+            }
+            
+            const dialog = document.getElementById('coordinateDialog');
+            if (dialog) {
+                dialog.style.display = 'none';
+            }
+            
+            // 隐藏点击位置标记
+            if (clickMarker) {
+                clickMarker.style.display = 'none';
+            }
+            
+            // 移除事件监听器
+            document.removeEventListener('click', closeCoordinateDialog);
+        };
+        
+        canvas.addEventListener('click', function(e) {
+            // 只有在没有拖动的情况下才触发坐标选择
+            if (hasDragged) {
+                hasDragged = false;
+                return;
+            }
+            
+            // 防止重复处理点击事件
+            if (isClickHandled) {
+                return;
+            }
+            isClickHandled = true;
+            
+            const rect = canvas.getBoundingClientRect();
+            const previewPixelX = (e.clientX - rect.left) / scale;
+            const previewPixelY = (e.clientY - rect.top) / scale;
+            
+            // 使用新的坐标换算函数计算世界坐标
+            const result = previewPixelToWorld(mapInfo, previewPixelX, previewPixelY);
+            const worldX = result.worldX.toFixed(2);
+            const worldY = result.worldY.toFixed(2);
+            const originalPixelX = result.originalPixelX;
+            const originalPixelY = result.originalPixelY;
+            
+            // 显示坐标对话框
+            showCoordinateDialog(e.clientX, e.clientY, previewPixelX, previewPixelY, worldX, worldY);
+            
+            console.log('Click:', { 
+                previewPixelX: previewPixelX, 
+                previewPixelY: previewPixelY,
+                originalPixelX: originalPixelX,
+                originalPixelY: originalPixelY,
+                worldX: worldX, 
+                worldY: worldY 
+            });
+            
+            // 将点击坐标传递给父窗口
+            if (window.parent) {
+                window.parent.postMessage({
+                    type: 'map_click',
+                    previewPixelX: previewPixelX,
+                    previewPixelY: previewPixelY,
+                    originalPixelX: originalPixelX,
+                    originalPixelY: originalPixelY,
+                    worldX: worldX,
+                    worldY: worldY
+                }, '*');
+            }
+            
+            // 重置点击处理状态
+            setTimeout(() => {
+                isClickHandled = false;
+            }, 100);
+        });
+        
+        canvas.style.cursor = 'grab';
+        
+        // 不再自动加载默认地图，只通过URL参数加载preview_url预览图
+
+        // 对外暴露的API
+        window.SlamMapViewer = {
+            // 设置路径点
+            setPath: function(points) {
+                console.log('Setting path with points:', points);
+                
+                // 确保points是数组
+                if (!Array.isArray(points)) {
+                    console.error('Invalid points parameter: must be an array');
+                    pathPoints = [];
+                    return;
+                }
+                
+                // 转换路径点坐标，从世界坐标转换为预览图像素坐标
+                pathPoints = points.map(point => {
+                    // 处理不同格式的路径点
+                    if (!point) {
+                        console.warn('Skipping null or undefined point');
+                        return null;
+                    }
+                    
+                    if (point.isPixelCoord) {
+                        // 如果点已经是像素坐标，直接使用
+                        if (point.x !== undefined && point.y !== undefined) {
+                            console.log('Using pixel coordinate:', point);
+                            return { x: point.x, y: point.y };
+                        } else {
+                            console.warn('Invalid pixel coordinate:', point);
+                            return null;
+                        }
+                    } else if (point.lon !== undefined && point.lat !== undefined) {
+                        // 如果点是经纬度格式，先转换为世界坐标
+                        console.log('Converting lat/lon to world coordinate:', point);
+                        // 这里需要根据实际的经纬度到世界坐标的转换逻辑进行调整
+                        // 暂时使用简单的转换，实际项目中需要根据地图的原点和比例尺进行计算
+                        const worldX = point.lon;
+                        const worldY = point.lat;
+                        if (mapInfo) {
+                            const result = worldToPreviewPixel(mapInfo, worldX, worldY);
+                            if (result && result.previewPixelX !== undefined && result.previewPixelY !== undefined) {
+                                console.log('Converted to preview pixel:', result);
+                                return { x: result.previewPixelX, y: result.previewPixelY };
+                            } else {
+                                console.warn('Failed to convert lat/lon to preview pixel:', point);
+                                return null;
+                            }
+                        } else {
+                            console.warn('Map info not available, cannot convert coordinates:', point);
+                            return null;
+                        }
+                    } else if (point.x !== undefined && point.y !== undefined) {
+                        // 如果点是世界坐标，转换为预览图像素坐标
+                        console.log('Converting world coordinate to preview pixel:', point);
+                        if (mapInfo) {
+                            const result = worldToPreviewPixel(mapInfo, point.x, point.y);
+                            if (result && result.previewPixelX !== undefined && result.previewPixelY !== undefined) {
+                                console.log('Converted to preview pixel:', result);
+                                return { x: result.previewPixelX, y: result.previewPixelY };
+                            } else {
+                                console.warn('Failed to convert world coordinate to preview pixel:', point);
+                                return null;
+                            }
+                        } else {
+                            console.warn('Map info not available, cannot convert coordinates:', point);
+                            return null;
+                        }
+                    } else {
+                        // 未知格式，跳过
+                        console.warn('Unknown point format:', point);
+                        return null;
+                    }
+                }).filter(Boolean); // 过滤掉null值
+                
+                console.log('Processed path points:', pathPoints);
+                
+                // 重新绘制地图、路径和小车
+                try {
+                    if (originalMapData) {
+                        ctx.putImageData(originalMapData, 0, 0);
+                    } else if (mapWidth > 0 && mapHeight > 0) {
+                        // 后备方案
+                        const imgData = ctx.getImageData(0, 0, mapWidth, mapHeight);
+                        ctx.putImageData(imgData, 0, 0);
+                    }
+                    
+                    drawPath();
+                    drawCar();
+                    console.log('Path set successfully with', pathPoints.length, 'points');
+                } catch (error) {
+                    console.error('Error setting path:', error);
+                }
+            },
+            
+            // 清除路径
+            clearPath: function() {
+                pathPoints = [];
+                // 重新绘制地图和小车
+                try {
+                    if (originalMapData) {
+                        ctx.putImageData(originalMapData, 0, 0);
+                    } else if (mapWidth > 0 && mapHeight > 0) {
+                        // 后备方案
+                        const imgData = ctx.getImageData(0, 0, mapWidth, mapHeight);
+                        ctx.putImageData(imgData, 0, 0);
+                    }
+                    drawCar();
+                    console.log('Path cleared');
+                } catch (error) {
+                    console.error('Error clearing path:', error);
+                }
+            },
+            
+            // 设置小车位置
+            setCarPosition: function(position) {
+                // 转换小车位置坐标，从世界坐标转换为预览图像素坐标
+                try {
+                    if (position && !position.isPixelCoord) {
+                        if (mapInfo && position.x !== undefined && position.y !== undefined) {
+                            const result = worldToPreviewPixel(mapInfo, position.x, position.y);
+                            if (result && result.previewPixelX !== undefined && result.previewPixelY !== undefined) {
+                                carPosition = {
+                                    x: result.previewPixelX,
+                                    y: result.previewPixelY,
+                                    angle: position.angle || 0,
+                                    isPixelCoord: true
+                                };
+                            } else {
+                                console.warn('Failed to convert car position to preview pixel:', position);
+                            }
+                        } else {
+                            console.warn('Invalid position or map info:', position, mapInfo);
+                        }
+                    } else if (position && position.x !== undefined && position.y !== undefined) {
+                        carPosition = position;
+                    } else {
+                        console.warn('Invalid position:', position);
+                    }
+                    // 重新绘制地图、路径和小车
+                    if (originalMapData) {
+                        ctx.putImageData(originalMapData, 0, 0);
+                    } else if (mapWidth > 0 && mapHeight > 0) {
+                        // 后备方案
+                        const imgData = ctx.getImageData(0, 0, mapWidth, mapHeight);
+                        ctx.putImageData(imgData, 0, 0);
+                    }
+                    drawPath();
+                    drawCar();
+                    console.log('Car position set:', position);
+                } catch (error) {
+                    console.error('Error setting car position:', error);
+                }
+            },
+            
+            // 清除小车位置
+            clearCarPosition: function() {
+                try {
+                    carPosition = null;
+                    // 重新绘制地图和路径
+                    if (canvas && canvas.width > 0 && canvas.height > 0) {
+                        const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                        ctx.putImageData(imgData, 0, 0);
+                        drawPath();
+                        console.log('Car position cleared');
+                    } else {
+                        console.warn('Canvas not ready for clearing car position');
+                    }
+                } catch (error) {
+                    console.error('Error clearing car position:', error);
+                }
+            },
+            
+            // 设置绘制模式
+            setDrawMode: function(mode) {
+                if (mode === 'normal' || mode === 'point' || mode === 'quad') {
+                    drawMode = mode;
+                    console.log('Draw mode set to:', mode);
+                } else {
+                    console.warn('Invalid draw mode:', mode);
+                }
+            },
+            
+            // 获取绘制模式
+            getDrawMode: function() {
+                return drawMode;
+            },
+            
+            // 坐标换算函数
+            previewPixelToWorld: function(previewPixelX, previewPixelY) {
+                return previewPixelToWorld(mapInfo, previewPixelX, previewPixelY);
+            },
+            
+            worldToPreviewPixel: function(worldX, worldY) {
+                return worldToPreviewPixel(mapInfo, worldX, worldY);
+            },
+            
+            // 设置地图信息
+            setMapInfo: function(info) {
+                mapInfo = {
+                    ...mapInfo,
+                    ...info
+                };
+                console.log('Map info set:', mapInfo);
+            },
+            
+            // 获取地图信息
+            getMapInfo: function() {
+                return mapInfo;
+            }
+        };
+    })();
+    </script>
+</body>
+</html>

@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebSocket 小车状态测试工具</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            color: white;
+            text-align: center;
+            margin-bottom: 30px;
+            font-size: 2.5em;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+        }
+
+        .card {
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            padding: 25px;
+            margin-bottom: 20px;
+        }
+
+        .card-title {
+            font-size: 1.5em;
+            color: #333;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #667eea;
+        }
+
+        .connection-panel {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .input-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .input-group label {
+            font-size: 0.9em;
+            color: #666;
+            font-weight: 600;
+        }
+
+        .input-group input {
+            padding: 12px 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 1em;
+            transition: border-color 0.3s;
+        }
+
+        .input-group input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        button {
+            padding: 12px 25px;
+            border: none;
+            border-radius: 8px;
+            font-size: 1em;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+        }
+
+        .btn-danger {
+            background: #f56565;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #e53e3e;
+        }
+
+        .btn-success {
+            background: #48bb78;
+            color: white;
+        }
+
+        .btn-success:hover {
+            background: #38a169;
+        }
+
+        .status-display {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 8px;
+            background: #f7fafc;
+            border-left: 4px solid #667eea;
+        }
+
+        .status-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .status-item:last-child {
+            border-bottom: none;
+        }
+
+        .status-label {
+            font-weight: 600;
+            color: #555;
+        }
+
+        .status-value {
+            color: #667eea;
+            font-weight: bold;
+        }
+
+        .status-value.warning {
+            color: #ed8936;
+        }
+
+        .status-value.danger {
+            color: #f56565;
+        }
+
+        .status-value.success {
+            color: #48bb78;
+        }
+
+        .data-log {
+            background: #1a1a2e;
+            color: #0f0;
+            padding: 20px;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+            max-height: 400px;
+            overflow-y: auto;
+            line-height: 1.6;
+        }
+
+        .log-entry {
+            margin-bottom: 8px;
+            padding: 5px 10px;
+            border-radius: 4px;
+        }
+
+        .log-entry.received {
+            background: rgba(72, 187, 120, 0.2);
+            border-left: 3px solid #48bb78;
+        }
+
+        .log-entry.sent {
+            background: rgba(102, 126, 234, 0.2);
+            border-left: 3px solid #667eea;
+        }
+
+        .log-entry.error {
+            background: rgba(245, 101, 101, 0.2);
+            border-left: 3px solid #f56565;
+        }
+
+        .log-entry.info {
+            background: rgba(237, 137, 54, 0.2);
+            border-left: 3px solid #ed8936;
+        }
+
+        .log-timestamp {
+            color: #888;
+            margin-right: 10px;
+        }
+
+        .visual-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        .visual-card {
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            transition: transform 0.3s;
+        }
+
+        .visual-card:hover {
+            transform: translateY(-5px);
+        }
+
+        .visual-card.battery {
+            background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+        }
+
+        .visual-card.speed {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+
+        .visual-card.temperature {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+        }
+
+        .visual-card.signal {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+        }
+
+        .visual-icon {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        .visual-value {
+            font-size: 2em;
+            font-weight: bold;
+            color: white;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+        }
+
+        .visual-label {
+            color: rgba(255,255,255,0.9);
+            font-size: 0.9em;
+            margin-top: 5px;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 10px;
+            background: rgba(255,255,255,0.3);
+            border-radius: 5px;
+            margin-top: 10px;
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: white;
+            border-radius: 5px;
+            transition: width 0.5s ease;
+        }
+
+        .clear-btn {
+            margin-top: 10px;
+        }
+
+        .connection-status {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+
+        .connection-status.connected {
+            background: #48bb78;
+            box-shadow: 0 0 10px #48bb78;
+        }
+
+        .connection-status.disconnected {
+            background: #f56565;
+        }
+
+        .connection-status.connecting {
+            background: #ed8936;
+            animation: pulse 1s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .car-list {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 15px;
+        }
+
+        .car-tag {
+            padding: 8px 16px;
+            background: #667eea;
+            color: white;
+            border-radius: 20px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .car-tag:hover {
+            background: #5568d3;
+            transform: scale(1.05);
+        }
+
+        .car-tag.active {
+            background: #48bb78;
+            box-shadow: 0 0 10px rgba(72, 187, 120, 0.5);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔌 WebSocket 小车状态测试工具</h1>
+
+        <!-- 连接控制面板 -->
+        <div class="card">
+            <div class="card-title">📡 连接控制</div>
+            <div class="connection-panel">
+                <div class="input-group">
+                    <label>服务器地址</label>
+                    <input type="text" id="serverUrl" value="ws://localhost:8001" style="width: 250px;">
+                </div>
+                <div class="input-group">
+                    <label>小车ID</label>
+                    <input type="text" id="carId" value="1" style="width: 100px;">
+                </div>
+                <div class="input-group">
+                    <label>操作</label>
+                    <button class="btn-primary" id="connectBtn" onclick="toggleConnection()">
+                        连接
+                    </button>
+                </div>
+                <div class="input-group">
+                    <label>状态</label>
+                    <span id="connectionStatus">
+                        <span class="connection-status disconnected"></span>
+                        未连接
+                    </span>
+                </div>
+            </div>
+
+            <div class="car-list">
+                <strong>快速选择小车:</strong>
+                <span class="car-tag" onclick="selectCar(1)">小车 1</span>
+                <span class="car-tag" onclick="selectCar(2)">小车 2</span>
+                <span class="car-tag" onclick="selectCar(3)">小车 3</span>
+            </div>
+
+            <div class="status-display" id="statusDisplay" style="display: none;">
+                <h3 style="margin-bottom: 15px;">📊 当前小车状态</h3>
+                <div class="visual-grid">
+                    <div class="visual-card battery">
+                        <div class="visual-icon">🔋</div>
+                        <div class="visual-value" id="batteryValue">--</div>
+                        <div class="visual-label">电量 (%)</div>
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="batteryProgress" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    <div class="visual-card speed">
+                        <div class="visual-icon">⚡</div>
+                        <div class="visual-value" id="speedValue">--</div>
+                        <div class="visual-label">速度 (m/s)</div>
+                    </div>
+                    <div class="visual-card temperature">
+                        <div class="visual-icon">🌡️</div>
+                        <div class="visual-value" id="temperatureValue">--</div>
+                        <div class="visual-label">温度 (°C)</div>
+                    </div>
+                    <div class="visual-card signal">
+                        <div class="visual-icon">📶</div>
+                        <div class="visual-value" id="signalValue">--</div>
+                        <div class="visual-label">信号 (%)</div>
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="signalProgress" style="width: 0%"></div>
+                        </div>
+                    </div>
+                </div>
+                <div style="margin-top: 20px;">
+                    <strong>详细数据:</strong>
+                    <div class="status-item">
+                        <span class="status-label">小车ID:</span>
+                        <span class="status-value" id="detailCarId">--</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label">状态:</span>
+                        <span class="status-value" id="detailStatus">--</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label">经度:</span>
+                        <span class="status-value" id="detailLongitude">--</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label">纬度:</span>
+                        <span class="status-value" id="detailLatitude">--</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label">时间戳:</span>
+                        <span class="status-value" id="detailTimestamp">--</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 数据日志 -->
+        <div class="card">
+            <div class="card-title">📝 数据日志</div>
+            <button class="btn-danger clear-btn" onclick="clearLog()">清空日志</button>
+            <div class="data-log" id="dataLog">
+                <div class="log-entry info">
+                    <span class="log-timestamp">[系统]</span>
+                    等待连接WebSocket服务器...
+                </div>
+            </div>
+        </div>
+
+        <!-- 手动发送测试 -->
+        <div class="card">
+            <div class="card-title">🧪 手动发送测试</div>
+            <div class="connection-panel">
+                <div class="input-group">
+                    <label>自定义JSON数据</label>
+                    <textarea id="testData" rows="4" style="width: 400px; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; font-family: monospace;" placeholder='{"battery": 85, "speed": 2.5, "temperature": 30, "signal": 90}'></textarea>
+                </div>
+            </div>
+            <button class="btn-success" style="margin-top: 15px;" onclick="sendTestData()">发送测试数据</button>
+        </div>
+    </div>
+
+    <script>
+        // WebSocket连接管理
+        let ws = null;
+        let isConnected = false;
+
+        // DOM元素
+        const serverUrlInput = document.getElementById('serverUrl');
+        const carIdInput = document.getElementById('carId');
+        const connectBtn = document.getElementById('connectBtn');
+        const connectionStatus = document.getElementById('connectionStatus');
+        const statusDisplay = document.getElementById('statusDisplay');
+        const dataLog = document.getElementById('dataLog');
+
+        // 更新连接状态显示
+        function updateConnectionStatus(status) {
+            const statusMap = {
+                'connected': { text: '已连接', class: 'connected' },
+                'disconnected': { text: '未连接', class: 'disconnected' },
+                'connecting': { text: '连接中...', class: 'connecting' }
+            };
+
+            const info = statusMap[status] || statusMap['disconnected'];
+            connectionStatus.innerHTML = `
+                <span class="connection-status ${info.class}"></span>
+                ${info.text}
+            `;
+        }
+
+        // 添加日志条目
+        function addLog(message, type = 'info') {
+            const now = new Date();
+            const timestamp = now.toLocaleTimeString('zh-CN', { hour12: false });
+
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            entry.innerHTML = `
+                <span class="log-timestamp">[${timestamp}]</span>
+                ${typeof message === 'object' ? JSON.stringify(message, null, 2) : message}
+            `;
+
+            dataLog.appendChild(entry);
+            dataLog.scrollTop = dataLog.scrollHeight;
+        }
+
+        // 清空日志
+        function clearLog() {
+            dataLog.innerHTML = '';
+            addLog('日志已清空', 'info');
+        }
+
+        // 选择小车
+        function selectCar(carId) {
+            carIdInput.value = carId;
+
+            // 更新标签样式
+            document.querySelectorAll('.car-tag').forEach(tag => {
+                tag.classList.remove('active');
+            });
+            event.target.classList.add('active');
+
+            addLog(`选择了小车 ${carId}`, 'info');
+        }
+
+        // 切换连接状态
+        function toggleConnection() {
+            if (isConnected) {
+                disconnect();
+            } else {
+                connect();
+            }
+        }
+
+        // 连接到WebSocket服务器
+        function connect() {
+            const serverUrl = serverUrlInput.value.trim();
+            const carId = carIdInput.value.trim();
+
+            if (!serverUrl || !carId) {
+                addLog('请填写服务器地址和小车ID', 'error');
+                return;
+            }
+
+            // 构建WebSocket URL
+            const wsUrl = `${serverUrl}/history/${carId}/monitor`;
+            addLog(`正在连接到: ${wsUrl}`, 'info');
+            updateConnectionStatus('connecting');
+            connectBtn.textContent = '连接中...';
+            connectBtn.disabled = true;
+
+            try {
+                ws = new WebSocket(wsUrl);
+
+                ws.onopen = () => {
+                    isConnected = true;
+                    updateConnectionStatus('connected');
+                    connectBtn.textContent = '断开';
+                    connectBtn.disabled = false;
+                    statusDisplay.style.display = 'block';
+                    addLog('WebSocket连接成功!', 'received');
+                };
+
+                ws.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        addLog(data, 'received');
+                        updateStatusDisplay(data);
+                    } catch (e) {
+                        addLog(`收到消息但无法解析: ${event.data}`, 'error');
+                    }
+                };
+
+                ws.onerror = (error) => {
+                    addLog('WebSocket连接错误', 'error');
+                    updateConnectionStatus('disconnected');
+                    connectBtn.textContent = '连接';
+                    connectBtn.disabled = false;
+                };
+
+                ws.onclose = () => {
+                    isConnected = false;
+                    updateConnectionStatus('disconnected');
+                    connectBtn.textContent = '连接';
+                    connectBtn.disabled = false;
+                    addLog('WebSocket连接已关闭', 'info');
+                };
+
+            } catch (e) {
+                addLog(`连接失败: ${e.message}`, 'error');
+                updateConnectionStatus('disconnected');
+                connectBtn.textContent = '连接';
+                connectBtn.disabled = false;
+            }
+        }
+
+        // 断开连接
+        function disconnect() {
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+            isConnected = false;
+            updateConnectionStatus('disconnected');
+            statusDisplay.style.display = 'none';
+            addLog('已断开连接', 'info');
+        }
+
+        // 更新状态显示
+        function updateStatusDisplay(data) {
+            // 更新视觉卡片
+            if (data.battery !== undefined) {
+                const batteryValue = document.getElementById('batteryValue');
+                batteryValue.textContent = data.battery + '%';
+                document.getElementById('batteryProgress').style.width = data.battery + '%';
+
+                // 设置颜色
+                batteryValue.className = 'visual-value';
+                if (data.battery < 20) {
+                    batteryValue.classList.add('danger');
+                } else if (data.battery < 50) {
+                    batteryValue.classList.add('warning');
+                } else {
+                    batteryValue.classList.add('success');
+                }
+            }
+
+            if (data.speed !== undefined) {
+                document.getElementById('speedValue').textContent = data.speed.toFixed(1);
+            }
+
+            if (data.temperature !== undefined) {
+                const tempValue = document.getElementById('temperatureValue');
+                tempValue.textContent = data.temperature.toFixed(1);
+
+                tempValue.className = 'visual-value';
+                if (data.temperature > 40) {
+                    tempValue.classList.add('danger');
+                } else if (data.temperature > 35) {
+                    tempValue.classList.add('warning');
+                } else {
+                    tempValue.classList.add('success');
+                }
+            }
+
+            if (data.signal !== undefined) {
+                const signalValue = document.getElementById('signalValue');
+                signalValue.textContent = data.signal + '%';
+                document.getElementById('signalProgress').style.width = data.signal + '%';
+
+                signalValue.className = 'visual-value';
+                if (data.signal < 30) {
+                    signalValue.classList.add('danger');
+                } else if (data.signal < 60) {
+                    signalValue.classList.add('warning');
+                } else {
+                    signalValue.classList.add('success');
+                }
+            }
+
+            // 更新详细信息
+            document.getElementById('detailCarId').textContent = data.car_id || data.carId || '--';
+            document.getElementById('detailStatus').textContent = data.status || '--';
+            document.getElementById('detailLongitude').textContent = data.longitude ? data.longitude.toFixed(6) : '--';
+            document.getElementById('detailLatitude').textContent = data.latitude ? data.latitude.toFixed(6) : '--';
+            document.getElementById('detailTimestamp').textContent = data.timestamp || '--';
+        }
+
+        // 发送测试数据
+        function sendTestData() {
+            const testDataStr = document.getElementById('testData').value.trim();
+
+            if (!testDataStr) {
+                addLog('请输入测试数据', 'error');
+                return;
+            }
+
+            try {
+                const testData = JSON.parse(testDataStr);
+                addLog('手动发送测试数据', 'sent');
+                addLog(testData, 'sent');
+
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify(testData));
+                    addLog('数据已发送', 'sent');
+                } else {
+                    addLog('WebSocket未连接，无法发送', 'error');
+                }
+            } catch (e) {
+                addLog(`JSON格式错误: ${e.message}`, 'error');
+            }
+        }
+
+        // 页面加载完成
+        document.addEventListener('DOMContentLoaded', () => {
+            addLog('WebSocket测试工具已就绪', 'info');
+            addLog('请输入服务器地址和小车ID，然后点击"连接"按钮', 'info');
+        });
+    </script>
+</body>
+</html>

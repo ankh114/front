@@ -1,0 +1,48 @@
+<svg width="800" height="600" xmlns="http://www.w3.org/2000/svg">
+  <!-- 背景 -->
+  <rect width="800" height="600" fill="#f0f0f0"/>
+  
+  <!-- 墙壁 -->
+  <rect x="50" y="50" width="700" height="500" fill="none" stroke="#333" stroke-width="4"/>
+  
+  <!-- 通道 -->
+  <rect x="50" y="200" width="700" height="200" fill="#e0e0e0"/>
+  
+  <!-- 停车位 -->
+  <!-- 左侧停车位 -->
+  <g transform="translate(100, 100)">
+    <rect x="0" y="0" width="100" height="40" fill="#ffffff" stroke="#666" stroke-width="2"/>
+    <rect x="0" y="50" width="100" height="40" fill="#ffffff" stroke="#666" stroke-width="2"/>
+    <rect x="0" y="100" width="100" height="40" fill="#ffffff" stroke="#666" stroke-width="2"/>
+  </g>
+  
+  <!-- 右侧停车位 -->
+  <g transform="translate(600, 100)">
+    <rect x="0" y="0" width="100" height="40" fill="#ffffff" stroke="#666" stroke-width="2"/>
+    <rect x="0" y="50" width="100" height="40" fill="#ffffff" stroke="#666" stroke-width="2"/>
+    <rect x="0" y="100" width="100" height="40" fill="#ffffff" stroke="#666" stroke-width="2"/>
+  </g>
+  
+  <!-- 底部停车位 -->
+  <g transform="translate(100, 400)">
+    <rect x="0" y="0" width="100" height="40" fill="#ffffff" stroke="#666" stroke-width="2"/>
+    <rect x="150" y="0" width="100" height="40" fill="#ffffff" stroke="#666" stroke-width="2"/>
+    <rect x="300" y="0" width="100" height="40" fill="#ffffff" stroke="#666" stroke-width="2"/>
+    <rect x="450" y="0" width="100" height="40" fill="#ffffff" stroke="#666" stroke-width="2"/>
+  </g>
+  
+  <!-- 入口 -->
+  <rect x="350" y="50" width="100" height="20" fill="#e0e0e0"/>
+  
+  <!-- 出口 -->
+  <rect x="350" y="530" width="100" height="20" fill="#e0e0e0"/>
+  
+  <!-- 文字标签 -->
+  <text x="400" y="30" text-anchor="middle" font-family="Arial" font-size="16" font-weight="bold">地库地图</text>
+  <text x="400" y="85" text-anchor="middle" font-family="Arial" font-size="12">入口</text>
+  <text x="400" y="565" text-anchor="middle" font-family="Arial" font-size="12">出口</text>
+  
+  <!-- 基站位置 -->
+  <circle cx="400" cy="300" r="10" fill="#4CAF50"/>
+  <text x="400" y="295" text-anchor="middle" font-family="Arial" font-size="10" fill="white">基站</text>
+</svg>

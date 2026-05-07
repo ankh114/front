@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SLAM地图查看器</title>
+    <link rel="icon" href="data:;base64,iVBORw0KGgo=">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: sans-serif; background: #1a1a2e; color: #eee; min-height: 100vh; display: flex; flex-direction: column; }
+        header { background: #16213e; padding: 1rem 2rem; display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #0f3460; }
+        h1 { font-size: 1.5rem; color: #e94560; }
+        .controls { display: flex; gap: 1rem; align-items: center; }
+        select, button { padding: 0.5rem 1rem; border: none; border-radius: 4px; cursor: pointer; font-size: 0.9rem; }
+        select { background: #0f3460; color: #fff; }
+        button { background: #e94560; color: #fff; }
+        button:hover { background: #ff6b6b; }
+        .main { flex: 1; display: flex; overflow: hidden; }
+        .sidebar { width: 250px; background: #16213e; padding: 1rem; border-right: 2px solid #0f3460; }
+        .sidebar h3 { color: #e94560; margin-bottom: 1rem; }
+        .map-info { background: #0f3460; padding: 1rem; border-radius: 8px; margin-bottom: 1rem; }
+        .map-info p { margin: 0.5rem 0; font-size: 0.85rem; }
+        .map-info span { color: #e94560; font-weight: bold; }
+        .canvas-container { flex: 1; position: relative; overflow: auto; background: #0a0a15; }
+        #mapCanvas { position: absolute; cursor: grab; display: block; }
+        #mapCanvas:active { cursor: grabbing; }
+        .loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #e94560; }
+        .legend-item { display: flex; align-items: center; gap: 0.5rem; margin: 0.5rem 0; font-size: 0.85rem; }
+        .legend-color { width: 20px; height: 20px; border-radius: 3px; }
+        .file-input { display: none; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>SLAM地图查看器</h1>
+        <div class="controls">
+            <select id="mapSelect">
+                <option value="">选择地图...</option>
+                <option value="maps/under_test.pgm">under_test</option>
+                <option value="maps/under_test_501.pgm">under_test_501</option>
+                <option value="maps/under_test_3.pgm">under_test_3</option>
+                <option value="maps/under_test_xl.pgm">under_test_xl</option>
+                <option value="maps/under_test_HIAS.pgm">under_test_HIAS</option>
+            </select>
+            <button onclick="document.getElementById('fileInputPGM').click()">加载本地PGM</button>
+            <input type="file" id="fileInputPGM" class="file-input" accept=".pgm">
+            <input type="file" id="fileInputYAML" class="file-input" accept=".yaml,.yml">
+            <button id="zoomIn">+</button>
+            <button id="zoomOut">-</button>
+            <button id="resetView">重置</button>
+        </div>
+    </header>
+    <div class="main">
+        <aside class="sidebar">
+            <h3>地图信息</h3>
+            <div class="map-info">
+                <p>文件名: <span id="infoName">-</span></p>
+                <p>分辨率: <span id="infoResolution">-</span></p>
+                <p>尺寸: <span id="infoSize">-</span></p>
+                <p>原点: <span id="infoOrigin">-</span></p>
+            </div>
+            <h3>图例</h3>
+            <div class="legend-item"><div class="legend-color" style="background:#1a1a1a"></div>障碍物</div>
+            <div class="legend-item"><div class="legend-color" style="background:#e94560"></div>未知区域</div>
+            <div class="legend-item"><div class="legend-color" style="background:#f5f5dc"></div>自由空间</div>
+        </aside>
+        <div class="canvas-container" id="canvasContainer">
+            <canvas id="mapCanvas"></canvas>
+            <div class="loading" id="loading">请选择或加载地图文件</div>
+        </div>
+    </div>
+
+    <script>
+    (function() {
+        const canvas = document.getElementById('mapCanvas');
+        const ctx = canvas.getContext('2d');
+        const container = document.getElementById('canvasContainer');
+        const loading = document.getElementById('loading');
+        
+        let scale = 1, offsetX = 0, offsetY = 0;
+        let isDragging = false, startX = 0, startY = 0;
+        let mapWidth = 0, mapHeight = 0;
+        // 新增：存储YAML解析后的参数（默认值兼容原有硬编码）
+        let yamlConfig = {
+            resolution: 0.05,
+            origin: [-24.25, -31.25, 0.0],
+            occupied_thresh: 0.65,
+            free_thresh: 0.196
+        };
+
+        // 新增：解析YAML文件核心函数
+        function parseYAML(yamlText) {
+            const config = {
+                resolution: 0.05,
+                origin: [-24.25, -31.25, 0.0],
+                occupied_thresh: 0.65,
+                free_thresh: 0.196
+            };
+            // 按行解析YAML（适配ROS标准地图YAML格式）
+            yamlText.split('\n').forEach(line => {
+                line = line.trim();
+                if (!line || line.startsWith('#')) return; // 跳过注释和空行
+                
+                const colonIndex = line.indexOf(':');
+                if (colonIndex === -1) return;
+                
+                const key = line.substring(0, colonIndex).trim();
+                const value = line.substring(colonIndex + 1).trim();
+                
+                switch(key) {
+                    case 'resolution':
+                        config.resolution = parseFloat(value);
+                        break;
+                    case 'origin':
+                        // 解析origin: [-24.25, -31.25, 0.0] 格式
+                        const originArr = value.replace(/\[|\]/g, '').split(',').map(v => parseFloat(v.trim()));
+                        if (originArr.length >= 2) {
+                            config.origin = originArr;
+                        }
+                        break;
+                    case 'occupied_thresh':
+                        config.occupied_thresh = parseFloat(value);
+                        break;
+                    case 'free_thresh':
+                        config.free_thresh = parseFloat(value);
+                        break;
+                }
+            });
+            return config;
+        }
+
+        // 新增：加载YAML文件（适配在线选择/本地加载）
+        async function loadYAML(yamlPath) {
+            try {
+                const response = await fetch(yamlPath);
+                if (!response.ok) throw new Error('YAML文件加载失败');
+                const yamlText = await response.text();
+                yamlConfig = parseYAML(yamlText);
+                // 更新侧边栏原点信息
+                document.getElementById('infoOrigin').textContent = yamlConfig.origin.join(', ') + ' m';
+                return yamlConfig;
+            } catch (e) {
+                console.warn('YAML加载失败，使用默认参数:', e);
+                // 仍使用默认参数，保证功能不中断
+                document.getElementById('infoOrigin').textContent = yamlConfig.origin.join(', ') + ' m';
+                return yamlConfig;
+            }
+        }
+
+        function parsePGM(data) {
+            let pos = 0, line = '';
+            
+            function skipComments() {
+                while (pos < data.length) {
+                    if (data[pos] === 35) {
+                        while (pos < data.length && data[pos] !== 10) pos++;
+                        pos++;
+                    } else if (data[pos] <= 32) {
+                        pos++;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            
+            function readNum() {
+                skipComments();
+                let n = 0;
+                while (pos < data.length && data[pos] > 32) {
+                    n = n * 10 + (data[pos] - 48);
+                    pos++;
+                }
+                return n;
+            }
+            
+            const magic = String.fromCharCode(data[pos++]);
+            if (magic !== 'P') return null;
+            const fmt = String.fromCharCode(data[pos++]);
+            if (fmt !== '2' && fmt !== '5') { alert('仅支持P2/P5格式'); return null; }
+            
+            const w = readNum(), h = readNum(), maxVal = readNum();
+            console.log('PGM:', w, h, maxVal, fmt);
+            if (w <= 0 || h <= 0) return null;
+            
+            const pixels = new Uint8Array(w * h);
+            if (fmt === '2') {
+                for (let i = 0; i < w * h; i++) pixels[i] = readNum();
+            } else {
+                for (let i = 0; i < w * h; i++) pixels[i] = data[pos++];
+            }
+            return { width: w, height: h, maxVal: maxVal, data: pixels };
+        }
+
+        // 修改：draw函数接收YAML参数（替换硬编码阈值）
+        function draw(pixels, w, h, maxVal) {
+            const imgData = ctx.createImageData(w, h);
+            const occ = yamlConfig.occupied_thresh;
+            const free = yamlConfig.free_thresh;
+            for (let i = 0; i < pixels.length; i++) {
+                const v = pixels[i] / maxVal;
+                const idx = i * 4;
+                if (v > occ) { 
+                    imgData.data[idx] = 26; imgData.data[idx+1] = 26; imgData.data[idx+2] = 26; 
+                } else if (v < free) { 
+                    imgData.data[idx] = 245; imgData.data[idx+1] = 245; imgData.data[idx+2] = 220; 
+                } else { 
+                    imgData.data[idx] = 233; imgData.data[idx+1] = 69; imgData.data[idx+2] = 96; 
+                }
+                imgData.data[idx+3] = 255;
+            }
+            ctx.putImageData(imgData, 0, 0);
+        }
+
+        function updateTransform() {
+            canvas.style.transform = 'translate(' + offsetX + 'px,' + offsetY + 'px) scale(' + scale + ')';
+        }
+
+        // 修改：load函数适配YAML参数
+        function load(data, filename) {
+            try {
+                const result = parsePGM(new Uint8Array(data));
+                if (!result) { loading.textContent = '解析失败'; return; }
+                
+                mapWidth = result.width;
+                mapHeight = result.height;
+                canvas.width = mapWidth;
+                canvas.height = mapHeight;
+                
+                draw(result.data, mapWidth, mapHeight, result.maxVal);
+                loading.style.display = 'none';
+                
+                scale = 1; offsetX = 0; offsetY = 0;
+                updateTransform();
+                
+                // 更新地图信息（使用YAML参数）
+                document.getElementById('infoName').textContent = filename;
+                document.getElementById('infoResolution').textContent = yamlConfig.resolution + ' m/pixel';
+                document.getElementById('infoSize').textContent = mapWidth + ' x ' + mapHeight;
+                document.getElementById('infoOrigin').textContent = yamlConfig.origin.join(', ') + ' m';
+            } catch (e) {
+                console.error(e);
+                loading.textContent = '错误: ' + e.message;
+            }
+        }
+
+        // 新增：本地加载PGM+YAML逻辑
+        let localPGMFile = null;
+        document.getElementById('fileInputPGM').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            localPGMFile = file;
+            // 自动触发YAML选择（匹配同名称的YAML）
+            const yamlFileName = file.name.replace('.pgm', '.yaml');
+            alert(`请选择与PGM匹配的YAML文件（建议：${yamlFileName}）`);
+            document.getElementById('fileInputYAML').click();
+        });
+
+        // 新增：本地加载YAML并关联PGM
+        document.getElementById('fileInputYAML').addEventListener('change', async function(e) {
+            const yamlFile = e.target.files[0];
+            if (!yamlFile || !localPGMFile) return;
+            
+            loading.textContent = '加载中...';
+            // 解析本地YAML
+            const yamlReader = new FileReader();
+            yamlReader.onload = function(ev) {
+                yamlConfig = parseYAML(ev.target.result);
+                // 解析本地PGM
+                const pgmReader = new FileReader();
+                pgmReader.onload = function(ev) {
+                    load(ev.target.result, localPGMFile.name);
+                };
+                pgmReader.readAsArrayBuffer(localPGMFile);
+            };
+            yamlReader.readAsText(yamlFile);
+        });
+
+        // 修改：在线选择地图时自动加载YAML
+        document.getElementById('mapSelect').addEventListener('change', async function(e) {
+            if (!e.target.value) return;
+            loading.textContent = '加载中...';
+            
+            // 匹配同名称的YAML文件（如maps/under_test.pgm → maps/under_test.yaml）
+            const yamlPath = e.target.value.replace('.pgm', '.yaml');
+            await loadYAML(yamlPath); // 先加载YAML
+            
+            // 再加载PGM
+            fetch(e.target.value)
+                .then(r => r.arrayBuffer())
+                .then(buf => load(buf, e.target.value.split('/').pop()))
+                .catch(e => {
+                    loading.textContent = '加载失败: ' + e.message + ' (请用HTTP服务器)';
+                });
+        });
+
+        // 原有交互逻辑（不变）
+        document.getElementById('zoomIn').onclick = function() { scale *= 1.2; updateTransform(); };
+        document.getElementById('zoomOut').onclick = function() { scale /= 1.2; updateTransform(); };
+        document.getElementById('resetView').onclick = function() { scale = 1; offsetX = 0; offsetY = 0; updateTransform(); };
+
+        canvas.addEventListener('mousedown', function(e) { isDragging = true; startX = e.clientX - offsetX; startY = e.clientY - offsetY; });
+        canvas.addEventListener('mousemove', function(e) { if (isDragging) { offsetX = e.clientX - startX; offsetY = e.clientY - startY; updateTransform(); } });
+        canvas.addEventListener('mouseup', function() { isDragging = false; });
+        canvas.addEventListener('mouseleave', function() { isDragging = false; });
+        canvas.addEventListener('wheel', function(e) { e.preventDefault(); scale *= e.deltaY > 0 ? 0.9 : 1.1; updateTransform(); });
+        
+        // 修改：坐标计算使用YAML参数（替换硬编码偏移）
+        canvas.addEventListener('click', function(e) {
+            const rect = canvas.getBoundingClientRect();
+            const x = (e.clientX - rect.left) / scale;
+            const y = (e.clientY - rect.top) / scale;
+            // 基于YAML的origin计算世界坐标
+            const worldX = (x * yamlConfig.resolution + yamlConfig.origin[0]).toFixed(2);
+            const worldY = ((mapHeight - y) * yamlConfig.resolution + yamlConfig.origin[1]).toFixed(2);
+            alert(
+                '像素坐标: (' + x.toFixed(0) + ', ' + y.toFixed(0) + ')\n' +
+                '世界坐标: (' + worldX + 'm, ' + worldY + 'm)'
+            );
+            console.log('Click:', { pixelX: x, pixelY: y, worldX: worldX, worldY: worldY });
+        });
+        
+        canvas.style.cursor = 'grab';
+    })();
+    </script>
+</body>
+</html>
