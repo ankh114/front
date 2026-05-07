@@ -3,7 +3,7 @@ import axios from 'axios';
 
 // 后端API基础URL
 // 可以根据实际情况修改
-const API_BASE_URL = '/api';
+const API_BASE_URL = 'http://192.168.0.154:8000';
 
 
 // axios
